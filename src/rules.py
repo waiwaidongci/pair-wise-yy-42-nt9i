@@ -20,3 +20,35 @@ def validate_transition(current,target):
     if not can_transition(current,target): raise ConflictError(f"不能从{current}转换到{target}")
 def completion_blockers(target,open_records): return ["仍有未关闭事项"] if target in TERMINAL_STATES and open_records>0 else []
 def role_for_transition(target): return set(TRANSITION_ROLES.get(target,[]))
+
+# ---- 火场撤离调度 ----
+ZONE_ENTITY='任务区'; DISPATCH_ENTITY='派工单'; ZONE_STATES=['open','closed']
+DISPATCH_STATES=['planned','in_progress','completed','closed']
+DISPATCH_TRANSITIONS={'planned': ['in_progress'], 'in_progress': ['completed'], 'completed': ['closed'], 'closed': []}
+DISPATCH_TRANSITION_ROLES={'in_progress': ['field_commander'], 'completed': ['field_commander'], 'closed': ['incident_commander']}
+ZONE_CREATE_ROLES=set(['incident_commander']); ZONE_CLOSE_ROLES=set(['incident_commander'])
+DISPATCH_CREATE_ROLES=set(['field_commander', 'incident_commander']); REPORT_ROLES=set(['field_commander', 'incident_commander'])
+RESOLVE_ROLES=set(['incident_commander']); MATERIAL_ROLES=set(['logistics'])
+REPORT_KINDS=['wind', 'breakpoints', 'location']; MEMBER_STATUSES=['occupied', 'pending_coordination', 'returned', 'released']
+def dispatch_plan(wind_level,breakpoints,member_count):
+    points=breakpoints or []
+    risk=round(min(10.0,wind_level*1.2+len(points)*0.5),2)
+    egress=max(10,int(120-wind_level*8-len(points)*2))
+    min_crew=max(2,(len(points)+1)//2+(1 if wind_level>=8 else 0))
+    return {"wind_level":wind_level,"breakpoint_count":len(points),"risk_score":risk,"egress_window_minutes":egress,"min_crew":min_crew,"crew_ok":member_count>=min_crew}
+def can_transition_dispatch(current,target): return target in DISPATCH_TRANSITIONS.get(current,[])
+def validate_dispatch_transition(current,target):
+    if current not in DISPATCH_STATES or target not in DISPATCH_STATES: raise ValidationError("未知派工状态")
+    if not can_transition_dispatch(current,target): raise ConflictError(f"不能从{current}转换到{target}")
+def role_for_dispatch_transition(target): return set(DISPATCH_TRANSITION_ROLES.get(target,[]))
+def closure_clear(checklist):
+    return not (checklist["unreturned_members"] or checklist["incomplete_materials"] or checklist["pending_coordinations"])
+def format_closure_blockers(checklist):
+    parts=[]
+    members=[row["member_name"] for row in checklist["unreturned_members"]]
+    if members: parts.append("未归队队员:"+",".join(members))
+    materials=[f"{row['name']}(缺{row['missing_qty']:g})" for row in checklist["incomplete_materials"]]
+    if materials: parts.append("未齐物资:"+",".join(materials))
+    pending=[row["member_name"] for row in checklist["pending_coordinations"]]
+    if pending: parts.append("待协调占用:"+",".join(pending))
+    return "；".join(parts)

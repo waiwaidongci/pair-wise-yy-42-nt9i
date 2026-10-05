@@ -36,3 +36,28 @@ def require_number(value,field,minimum=0.0):
     return number
 def ensure_role(role,allowed):
     if role not in allowed: raise PermissionDenied("当前角色无权执行该操作")
+def require_wind_level(value,field="wind_level"):
+    number=require_number(value,field,0.0)
+    if number>17: raise ValidationError(f"{field}必须在0-17级之间")
+    return number
+def normalize_breakpoints(value,field="breakpoints"):
+    if not isinstance(value,list) or not value: raise ValidationError(f"{field}必须是非空折点列表")
+    if len(value)>500: raise ValidationError(f"{field}不能超过500个折点")
+    points=[]
+    for point in value:
+        if isinstance(point,dict): lat,lng=point.get("lat"),point.get("lng")
+        elif isinstance(point,(list,tuple)) and len(point)==2: lat,lng=point[0],point[1]
+        else: raise ValidationError(f"{field}折点必须是[纬度,经度]或含lat/lng的对象")
+        lat=require_number(lat,"lat",-90.0); lng=require_number(lng,"lng",-180.0)
+        if lat>90: raise ValidationError("lat必须在-90到90之间")
+        if lng>180: raise ValidationError("lng必须在-180到180之间")
+        points.append({"lat":lat,"lng":lng})
+    return points
+def require_name_list(value,field="members",max_items=200):
+    if not isinstance(value,list) or not value: raise ValidationError(f"{field}必须是非空名单列表")
+    if len(value)>max_items: raise ValidationError(f"{field}不能超过{max_items}人")
+    names=[]; seen=set()
+    for item in value:
+        name=require_text(item,field,100)
+        if name not in seen: seen.add(name); names.append(name)
+    return names

@@ -3,8 +3,8 @@ from __future__ import annotations
 import json
 from http.server import BaseHTTPRequestHandler
 from pathlib import Path
-from typing import Any, Dict, Optional, Tuple
-from urllib.parse import parse_qs, urlparse
+from typing import Any, Dict, List, Tuple
+from urllib.parse import urlparse
 
 from .domain import (ConflictError, DomainError, NotFoundError, PermissionDenied,
                      ValidationError)
@@ -73,31 +73,40 @@ def make_handler(service: Service, static_dir: str):
                 status = 500
             self._json(status, {"error": exc.__class__.__name__, "message": str(exc)})
 
+        @staticmethod
+        def _segments(path: str) -> List[str]:
+            return [part for part in path.split("/") if part]
+
         def do_GET(self) -> None:
             try:
                 path = urlparse(self.path).path
+                seg = self._segments(path)
+                actor, role = self._identity()
+                del actor
                 if path == "/health":
                     self._json(200, {"status": "ok"})
                 elif path == "/":
                     self._html(root / "index.html")
-                elif path == "/api/items":
-                    actor, role = self._identity()
-                    del actor
+                elif seg == ["api", "items"]:
                     self._json(200, {"items": service.list_items(role)})
-                elif path.startswith("/api/items/") and path.endswith("/records"):
-                    item_id = int(path.split("/")[3])
-                    actor, role = self._identity()
-                    del actor
-                    self._json(200, {"records": service.list_records(item_id, role)})
-                elif path.startswith("/api/items/"):
-                    item_id = int(path.rsplit("/", 1)[-1])
-                    actor, role = self._identity()
-                    del actor
-                    self._json(200, service.get_item(item_id, role))
-                elif path == "/api/audit":
-                    actor, role = self._identity()
-                    del actor
+                elif len(seg) == 3 and seg[:2] == ["api", "items"]:
+                    self._json(200, service.get_item(int(seg[2]), role))
+                elif len(seg) == 4 and seg[:2] == ["api", "items"] and seg[3] == "records":
+                    self._json(200, {"records": service.list_records(int(seg[2]), role)})
+                elif len(seg) == 4 and seg[:2] == ["api", "items"] and seg[3] == "zones":
+                    self._json(200, {"zones": service.list_zones(int(seg[2]), role)})
+                elif seg == ["api", "audit"]:
                     self._json(200, {"events": service.audit(role)})
+                elif len(seg) == 3 and seg[:2] == ["api", "zones"]:
+                    self._json(200, service.get_zone(int(seg[2]), role))
+                elif len(seg) == 4 and seg[:2] == ["api", "zones"] and seg[3] == "dispatches":
+                    self._json(200, {"dispatches": service.list_dispatches(int(seg[2]), role)})
+                elif len(seg) == 4 and seg[:2] == ["api", "zones"] and seg[3] == "materials":
+                    self._json(200, {"materials": service.list_materials(int(seg[2]), role)})
+                elif len(seg) == 4 and seg[:2] == ["api", "zones"] and seg[3] == "closure_checklist":
+                    self._json(200, service.closure_checklist(int(seg[2]), role))
+                elif len(seg) == 3 and seg[:2] == ["api", "dispatches"]:
+                    self._json(200, service.get_dispatch(int(seg[2]), role))
                 else:
                     self._json(404, {"error": "not_found"})
             except Exception as exc:
@@ -106,19 +115,40 @@ def make_handler(service: Service, static_dir: str):
         def do_POST(self) -> None:
             try:
                 path = urlparse(self.path).path
+                seg = self._segments(path)
                 actor, role = self._identity()
                 body = self._body()
-                if path == "/api/items":
+                if seg == ["api", "items"]:
                     self._json(201, service.create_item(body, actor, role))
-                elif path.startswith("/api/items/") and path.endswith("/records"):
-                    item_id = int(path.split("/")[3])
-                    self._json(201, service.add_record(item_id, body, actor, role))
-                elif path.startswith("/api/items/") and path.endswith("/transition"):
-                    item_id = int(path.split("/")[3])
-                    target = body.get("target")
-                    expected = body.get("expected_version")
+                elif len(seg) == 4 and seg[:2] == ["api", "items"] and seg[3] == "records":
+                    self._json(201, service.add_record(int(seg[2]), body, actor, role))
+                elif len(seg) == 4 and seg[:2] == ["api", "items"] and seg[3] == "transition":
                     self._json(200, service.transition(
-                        item_id, target, expected, actor, role))
+                        int(seg[2]), body.get("target"),
+                        body.get("expected_version"), actor, role))
+                elif len(seg) == 4 and seg[:2] == ["api", "items"] and seg[3] == "zones":
+                    self._json(201, service.create_zone(int(seg[2]), body, actor, role))
+                elif len(seg) == 4 and seg[:2] == ["api", "zones"] and seg[3] == "reports":
+                    result = service.submit_report(int(seg[2]), body, actor, role)
+                    self._json(200 if result.get("merged") else 201, result)
+                elif len(seg) == 4 and seg[:2] == ["api", "zones"] and seg[3] == "dispatches":
+                    result = service.create_dispatch(int(seg[2]), body, actor, role)
+                    self._json(200 if result.get("merged") else 201, result)
+                elif len(seg) == 4 and seg[:2] == ["api", "zones"] and seg[3] == "materials":
+                    self._json(201, service.upsert_material(int(seg[2]), body, actor, role))
+                elif (len(seg) == 6 and seg[:2] == ["api", "zones"]
+                      and seg[3] == "materials" and seg[5] == "deliver"):
+                    result = service.deliver_material(
+                        int(seg[2]), int(seg[4]), body, actor, role)
+                    self._json(200 if result.get("merged") else 201, result)
+                elif len(seg) == 4 and seg[:2] == ["api", "zones"] and seg[3] == "close":
+                    self._json(200, service.close_zone(int(seg[2]), body, actor, role))
+                elif len(seg) == 4 and seg[:2] == ["api", "dispatches"] and seg[3] == "transition":
+                    self._json(200, service.transition_dispatch(int(seg[2]), body, actor, role))
+                elif (len(seg) == 6 and seg[:2] == ["api", "dispatches"]
+                      and seg[3] == "members" and seg[5] == "resolve"):
+                    self._json(200, service.resolve_member(
+                        int(seg[2]), int(seg[4]), body, actor, role))
                 else:
                     self._json(404, {"error": "not_found"})
             except Exception as exc:
